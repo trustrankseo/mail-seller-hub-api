@@ -136,15 +136,15 @@ async function inventoryText() {
 }
 
 async function pricesText() {
-  const products = await listProducts();
-  if (!products.length) return '💰 Prices\n\nNo product pricing is available right now.';
+  const products = await listProducts({ availableOnly: true });
+  if (!products.length) return '💰 Prices\n\nNo stock is available right now.';
 
   if (looksLikeUnmappedItemCollection(products)) {
     return '💰 Current Prices\n\nFirebase is connected, but the current inventory documents do not expose a mapped product-price field to the bot yet. Pricing will appear here after the website data fields are mapped.';
   }
 
-  const priced = products.filter((p) => p.active && Number.isFinite(Number(p.price)));
-  if (!priced.length) return '💰 Prices\n\nNo product pricing is configured right now.';
+  const priced = products.filter((p) => p.active && Number(p.stock || 0) > 0 && Number(p.price || 0) > 0);
+  if (!priced.length) return '💰 Prices\n\nNo priced stock is available right now.';
   const visible = priced.slice(0, DISPLAY_LIMIT);
   const lines = visible.map((p, i) => `${i + 1}. ${p.name}\n   ${pricingText(p).replace(/\n/g, '\n   ')}`);
   const more = priced.length > DISPLAY_LIMIT ? `\n\n+ ${priced.length - DISPLAY_LIMIT} more product(s).` : '';

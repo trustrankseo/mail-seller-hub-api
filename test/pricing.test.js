@@ -43,3 +43,13 @@ test('display includes the website base price and bulk tiers', () => {
   assert.match(pricingText(product), /Base price: 0\.60 USD each/);
   assert.match(pricingText(product), /500\+: 0\.50 USD each/);
 });
+
+test('zero price is not treated as a valid customer price', () => {
+  const product = normalizeProduct('sold-out', {
+    pricePerEmail: 0,
+    stockCount: 0
+  });
+
+  assert.equal(product.price, 0);
+  assert.equal(product.stock, 0);
+});
