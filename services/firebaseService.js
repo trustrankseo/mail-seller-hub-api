@@ -212,6 +212,40 @@ async function getPaymentSettings() {
   return envFallback;
 }
 
+async function getTelegramChannelSettings() {
+  const firestore = getDb();
+  let data = {};
+  try {
+    const doc = await firestore.collection('settings').doc('main').get();
+    if (doc.exists) data = doc.data() || {};
+  } catch (error) {
+    console.warn('Unable to read Telegram channel settings:', error.message);
+  }
+
+  const channelId = String(
+    data.telegramChannelId || data.requiredChannelId || process.env.TELEGRAM_CHANNEL_ID || ''
+  ).trim();
+  const channelUrl = String(
+    data.telegramChannelUrl || data.requiredChannelUrl || process.env.TELEGRAM_CHANNEL_URL ||
+    (channelId.startsWith('@') ? `https://t.me/${channelId.slice(1)}` : '')
+  ).trim();
+  return { channelId, channelUrl };
+}
+
+async function resolveAdminEmail(settings = {}) {
+  if (settings.adminEmail) return settings.adminEmail;
+  try {
+    const firestore = getDb();
+    const snap = await firestore.collection('admin').where('role', '==', 'admin').limit(1).get();
+    if (snap.empty) return '';
+    const user = await admin.auth().getUser(snap.docs[0].id);
+    return user.email || '';
+  } catch (error) {
+    console.warn('Unable to resolve Firebase admin email:', error.message);
+    return '';
+  }
+}
+
 async function getOrder(orderId) {
   const firestore = getDb();
   const collection = process.env.ORDERS_COLLECTION || 'orders';
@@ -276,6 +310,7 @@ async function claimOrderPayment(orderId, txHash, changes = {}) {
 async function createPaymentNotification(order) {
   const firestore = getDb();
   const settings = await getPaymentSettings();
+  const adminEmail = await resolveAdminEmail(settings);
   const title = `Payment verified for order ${order.id}`;
   const body = `${order.productName} | Qty ${order.quantity} | ${Number(order.paidAmount || order.total || 0).toFixed(2)} USDT | TxID ${order.txHash}`;
 
@@ -288,9 +323,9 @@ async function createPaymentNotification(order) {
     createdAt: admin.firestore.FieldValue.serverTimestamp()
   });
 
-  if (settings.adminEmail) {
+  if (adminEmail) {
     await firestore.collection(process.env.MAIL_COLLECTION || 'mail').add({
-      to: settings.adminEmail,
+      to: adminEmail,
       message: {
         subject: title,
         text: `${body}\n\nOpen the admin Orders panel and decide whether to approve and send the emails.`
@@ -300,7 +335,7 @@ async function createPaymentNotification(order) {
     });
   }
 
-  return { adminEmail: settings.adminEmail, telegramChatId: settings.telegramChatId };
+  return { adminEmail, telegramChatId: settings.telegramChatId };
 }
 
 async function saveSubscriber(user = {}, active = true) {
@@ -373,6 +408,7 @@ module.exports = {
   getProduct,
   upsertProduct,
   getPaymentSettings,
+  getTelegramChannelSettings,
   getOrder,
   updateOrder,
   findOrderByTxHash,

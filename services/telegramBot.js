@@ -2,6 +2,7 @@ const {
   listProducts,
   getProduct,
   getPaymentSettings,
+  getTelegramChannelSettings,
   saveSubscriber,
   listSubscribers,
   saveOrder,
@@ -109,6 +110,38 @@ function backKeyboard() {
 function money(product) {
   const price = Number(product.price || 0);
   return `${price.toFixed(price % 1 === 0 ? 0 : 2)} ${product.currency || 'USD'}`;
+}
+
+async function isChannelMember(userId, channelId) {
+  if (!channelId || !userId) return true;
+  const result = await telegramRequest('getChatMember', {
+    chat_id: channelId,
+    user_id: userId
+  });
+  const member = result.result || {};
+  return ['creator', 'administrator', 'member'].includes(member.status) ||
+    (member.status === 'restricted' && member.is_member === true);
+}
+
+async function sendJoinPrompt(chatId, channel) {
+  const buttons = [];
+  if (channel.channelUrl) buttons.push([{ text: '📢 Join Channel', url: channel.channelUrl }]);
+  buttons.push([{ text: '✅ Verify Join', callback_data: 'verify_join' }]);
+  return sendMessage(chatId, '🔒 Pehle hamara official channel join karein. Join karne ke baad “Verify Join” dabayein; phir store aur order options khul jayenge.', {
+    reply_markup: { inline_keyboard: buttons }
+  });
+}
+
+async function requireChannelMembership(chatId, userId) {
+  const channel = await getTelegramChannelSettings();
+  if (!channel.channelId) return true;
+  try {
+    if (await isChannelMember(userId, channel.channelId)) return true;
+  } catch (error) {
+    console.error('Telegram membership verification failed:', error);
+  }
+  await sendJoinPrompt(chatId, channel);
+  return false;
 }
 
 function unitPriceForQuantity(product, quantity) {
@@ -352,11 +385,13 @@ async function handlePaymentScreenshot(message, session) {
 
 async function handleMessage(message) {
   if (!message?.chat?.id) return;
+  if (message.is_automatic_forward) return;
   const chatId = message.chat.id;
   const text = String(message.text || '').trim();
   const t = text.toLowerCase();
 
   try {
+    if (message.chat.type === 'private' && !await requireChannelMembership(chatId, message.from?.id)) return;
     const session = await getSession(chatId).catch(() => null);
     if (session?.action === 'awaiting_payment_screenshot') {
       return handlePaymentScreenshot(message, session);
@@ -410,6 +445,19 @@ async function handleCallbackQuery(query) {
   await answerCallbackQuery(query.id).catch(() => null);
 
   try {
+    if (data === 'verify_join') {
+      const channel = await getTelegramChannelSettings();
+      if (!channel.channelId) return showMenu(chatId);
+      try {
+        if (await isChannelMember(query.from?.id, channel.channelId)) {
+          return sendMessage(chatId, '✅ Channel membership verified. Ab aap tamam options use kar sakte hain.', { reply_markup: mainKeyboard() });
+        }
+      } catch (error) {
+        console.error('Telegram membership verification failed:', error);
+      }
+      return sendJoinPrompt(chatId, channel);
+    }
+    if (query.message.chat.type === 'private' && !await requireChannelMembership(chatId, query.from?.id)) return;
     if (data === 'menu') return showMenu(chatId);
     if (data === 'inventory') return sendMessage(chatId, await inventoryText(), { reply_markup: backKeyboard() });
     if (data === 'prices') return sendMessage(chatId, await pricesText(), { reply_markup: backKeyboard() });
@@ -463,8 +511,6 @@ async function handleCallbackQuery(query) {
 
 async function broadcastInventoryUpdate(product) {
   const subscribers = await listSubscribers();
-  if (!subscribers.length) return { sent: 0, failed: 0 };
-
   const text = `🔔 New Inventory Available!\n\n📧 ${product.name}\nAvailable: ${product.stock}\nPrice: ${money(product)} each\n\nOpen the bot and tap Buy to order.`;
   let sent = 0;
   let failed = 0;
@@ -477,7 +523,18 @@ async function broadcastInventoryUpdate(product) {
     results.forEach((r) => r.status === 'fulfilled' ? sent++ : failed++);
   }
 
-  return { sent, failed };
+  let channelSent = false;
+  const channel = await getTelegramChannelSettings();
+  if (channel.channelId) {
+    channelSent = await sendMessage(channel.channelId, text)
+      .then(() => true)
+      .catch((error) => {
+        console.error('Telegram channel inventory post failed:', error);
+        return false;
+      });
+  }
+
+  return { sent, failed, channelSent };
 }
 
 async function setWebhook(webhookUrl) {

@@ -29,7 +29,7 @@ app.get('/', (req, res) => {
   res.json({
     status: 'online',
     service: 'Mail Seller Hub API',
-    version: '1.2.0',
+    version: '1.2.1',
     telegramTokenConfigured: Boolean(telegramTokenSource),
     telegramTokenSource,
     firebase: firebaseConfigStatus(),
