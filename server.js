@@ -7,33 +7,22 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// API Routes
+const productsRoute = require('./routes/products');
+const ordersRoute = require('./routes/orders');
+const paymentRoute = require('./routes/payment');
+const telegramRoute = require('./routes/telegram');
+
+app.use('/api/products', productsRoute);
+app.use('/api/orders', ordersRoute);
+app.use('/api/payment', paymentRoute);
+app.use('/api/telegram', telegramRoute);
+
 app.get('/', (req, res) => {
   res.json({
     status: 'online',
-    service: 'Mail Seller Hub API'
-  });
-});
-
-app.get('/api/products', (req, res) => {
-  res.json({
-    products: []
-  });
-});
-
-app.get('/api/payment', (req, res) => {
-  res.json({
-    methods: [],
-    message: 'Payment configuration will be connected later.'
-  });
-});
-
-app.post('/api/orders', (req, res) => {
-  const order = req.body;
-
-  res.json({
-    success: true,
-    message: 'Order received',
-    order
+    service: 'Mail Seller Hub API',
+    telegram: 'connected-ready'
   });
 });
 
