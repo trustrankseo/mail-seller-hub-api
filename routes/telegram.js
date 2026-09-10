@@ -1,11 +1,11 @@
 const express = require('express');
 const router = express.Router();
-const { handleMessage, setWebhook, getWebhookInfo } = require('../services/telegramBot');
+const { handleMessage, setWebhook, getWebhookInfo, getTelegramToken } = require('../services/telegramBot');
 
 router.get('/status', async (req, res) => {
   try {
-    if (!process.env.TELEGRAM_TOKEN) {
-      return res.status(500).json({ ok: false, error: 'TELEGRAM_TOKEN is not configured' });
+    if (!getTelegramToken()) {
+      return res.status(500).json({ ok: false, error: 'Telegram bot token is not configured' });
     }
     const info = await getWebhookInfo();
     res.json({ ok: true, webhook: info.result });
@@ -17,8 +17,8 @@ router.get('/status', async (req, res) => {
 
 router.get('/setup', async (req, res) => {
   try {
-    if (!process.env.TELEGRAM_TOKEN) {
-      return res.status(500).json({ ok: false, error: 'TELEGRAM_TOKEN is not configured' });
+    if (!getTelegramToken()) {
+      return res.status(500).json({ ok: false, error: 'Telegram bot token is not configured' });
     }
 
     const forwardedProto = req.headers['x-forwarded-proto'];
