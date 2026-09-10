@@ -1,6 +1,17 @@
 const express = require('express');
 const router = express.Router();
-const { getPaymentSettings } = require('../services/firebaseService');
+const { getPaymentSettings, getDb } = require('../services/firebaseService');
+const { inspectPaymentSource } = require('../services/schemaInspector');
+
+router.get('/schema', async (req, res) => {
+  try {
+    const schema = await inspectPaymentSource(getDb);
+    res.json({ ok: true, schema });
+  } catch (error) {
+    console.error('Payment schema inspect error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
 
 router.get('/', async (req, res) => {
   try {
