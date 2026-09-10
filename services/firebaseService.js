@@ -67,9 +67,9 @@ function numberValue(value, fallback = 0) {
 function normalizeProduct(id, data = {}) {
   const name = data.name || data.title || data.productName || data.product || data.type || data.category || id;
   const price = numberValue(data.price ?? data.unitPrice ?? data.salePrice ?? data.rate, 0);
-  const stock = numberValue(data.stock ?? data.quantity ?? data.qty ?? data.available ?? data.count ?? data.inventory, 0);
+  const stock = numberValue(data.stockCount ?? data.stock ?? data.quantity ?? data.qty ?? data.available ?? data.count ?? data.inventory, 0);
   const currency = data.currency || data.currencyCode || process.env.DEFAULT_CURRENCY || 'USD';
-  const active = data.active !== false && data.enabled !== false && String(data.status || '').toLowerCase() !== 'inactive';
+  const active = data.isActive !== false && data.active !== false && data.enabled !== false && String(data.status || '').toLowerCase() !== 'inactive';
 
   return {
     id,
@@ -86,7 +86,9 @@ async function resolveProductsCollection() {
   const forced = process.env.PRODUCTS_COLLECTION;
   if (forced) return forced;
 
-  const candidates = ['products', 'inventory', 'mails', 'emails', 'stock'];
+  // The website keeps sellable product/category metadata in `categories`.
+  // Individual inventory rows live in `emails` and must never be exposed as products.
+  const candidates = ['categories', 'products', 'inventory', 'mails', 'stock'];
   for (const name of candidates) {
     try {
       const snap = await firestore.collection(name).limit(1).get();
@@ -96,7 +98,7 @@ async function resolveProductsCollection() {
     }
   }
 
-  return 'products';
+  return 'categories';
 }
 
 async function listProducts({ availableOnly = false } = {}) {
@@ -129,14 +131,21 @@ async function upsertProduct(product = {}) {
 
   const ref = firestore.collection(collectionName).doc(id);
   const before = await ref.get();
+  const normalizedStock = numberValue(product.stockCount ?? product.stock ?? product.quantity ?? product.qty, 0);
   const payload = {
     name: product.name || product.title || id,
     price: numberValue(product.price ?? product.unitPrice, 0),
-    stock: numberValue(product.stock ?? product.quantity ?? product.qty, 0),
     currency: product.currency || process.env.DEFAULT_CURRENCY || 'USD',
-    active: product.active !== false,
     updatedAt: admin.firestore.FieldValue.serverTimestamp()
   };
+
+  if (collectionName === 'categories') {
+    payload.stockCount = normalizedStock;
+    payload.isActive = product.isActive !== false && product.active !== false;
+  } else {
+    payload.stock = normalizedStock;
+    payload.active = product.active !== false;
+  }
 
   if (!before.exists) payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
   await ref.set(payload, { merge: true });
