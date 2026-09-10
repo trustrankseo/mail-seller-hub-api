@@ -1,8 +1,12 @@
 const STORE_URL = process.env.STORE_URL || 'https://mail-seller-hub.web.app/';
 
+function getTelegramToken() {
+  return process.env.TELEGRAM_TOKEN || process.env.TELEGRAM_BOT_TOKEN || process.env.BOT_TOKEN || '';
+}
+
 function telegramApi(method) {
-  const token = process.env.TELEGRAM_TOKEN;
-  if (!token) throw new Error('TELEGRAM_TOKEN is not configured');
+  const token = getTelegramToken();
+  if (!token) throw new Error('Telegram bot token is not configured. Use TELEGRAM_TOKEN in Vercel Production environment.');
   return `https://api.telegram.org/bot${token}/${method}`;
 }
 
@@ -97,4 +101,4 @@ async function getWebhookInfo() {
   return data;
 }
 
-module.exports = { handleMessage, sendMessage, setWebhook, getWebhookInfo };
+module.exports = { handleMessage, sendMessage, setWebhook, getWebhookInfo, getTelegramToken };
