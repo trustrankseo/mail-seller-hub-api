@@ -1,6 +1,12 @@
 const express = require('express');
 const router = express.Router();
-const { handleMessage, setWebhook, getWebhookInfo, getTelegramToken } = require('../services/telegramBot');
+const {
+  handleMessage,
+  handleCallbackQuery,
+  setWebhook,
+  getWebhookInfo,
+  getTelegramToken
+} = require('../services/telegramBot');
 
 router.get('/status', async (req, res) => {
   try {
@@ -37,9 +43,11 @@ router.get('/setup', async (req, res) => {
 router.post('/webhook', async (req, res) => {
   try {
     const update = req.body;
-    if (update && update.message) {
-      await handleMessage(update.message);
-    }
+
+    // Acknowledge only after processing so failures remain visible in Vercel logs.
+    if (update?.message) await handleMessage(update.message);
+    if (update?.callback_query) await handleCallbackQuery(update.callback_query);
+
     res.json({ ok: true });
   } catch (error) {
     console.error('Telegram webhook error:', error);

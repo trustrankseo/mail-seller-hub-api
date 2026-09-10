@@ -1,9 +1,9 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const { firebaseConfigStatus } = require('./services/firebaseService');
 
 const app = express();
-
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 
@@ -26,19 +26,21 @@ function detectTelegramTokenSource() {
 
 app.get('/', (req, res) => {
   const telegramTokenSource = detectTelegramTokenSource();
-  const telegramLikeEnvKeys = Object.keys(process.env)
-    .filter((key) => /telegram|bot.*token|token.*bot/i.test(key))
-    .sort();
-
   res.json({
     status: 'online',
     service: 'Mail Seller Hub API',
+    version: '1.1.0',
     telegramTokenConfigured: Boolean(telegramTokenSource),
     telegramTokenSource,
-    telegramLikeEnvKeys,
+    firebase: firebaseConfigStatus(),
     deploymentEnvironment: process.env.VERCEL_ENV || null,
-    telegramSetupEndpoint: '/api/telegram/setup',
-    telegramStatusEndpoint: '/api/telegram/status'
+    endpoints: {
+      products: '/api/products',
+      payment: '/api/payment',
+      orders: '/api/orders',
+      telegramSetup: '/api/telegram/setup',
+      telegramStatus: '/api/telegram/status'
+    }
   });
 });
 
@@ -49,9 +51,7 @@ app.use((err, req, res, next) => {
 
 if (!process.env.VERCEL) {
   const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => {
-    console.log(`API running on port ${PORT}`);
-  });
+  app.listen(PORT, () => console.log(`API running on port ${PORT}`));
 }
 
 module.exports = app;
