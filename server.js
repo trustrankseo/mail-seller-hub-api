@@ -17,11 +17,26 @@ app.use('/api/orders', ordersRoute);
 app.use('/api/payment', paymentRoute);
 app.use('/api/telegram', telegramRoute);
 
+function detectTelegramTokenSource() {
+  if (process.env.TELEGRAM_TOKEN) return 'TELEGRAM_TOKEN';
+  if (process.env.TELEGRAM_BOT_TOKEN) return 'TELEGRAM_BOT_TOKEN';
+  if (process.env.BOT_TOKEN) return 'BOT_TOKEN';
+  return null;
+}
+
 app.get('/', (req, res) => {
+  const telegramTokenSource = detectTelegramTokenSource();
+  const telegramLikeEnvKeys = Object.keys(process.env)
+    .filter((key) => /telegram|bot.*token|token.*bot/i.test(key))
+    .sort();
+
   res.json({
     status: 'online',
     service: 'Mail Seller Hub API',
-    telegramTokenConfigured: Boolean(process.env.TELEGRAM_TOKEN),
+    telegramTokenConfigured: Boolean(telegramTokenSource),
+    telegramTokenSource,
+    telegramLikeEnvKeys,
+    deploymentEnvironment: process.env.VERCEL_ENV || null,
     telegramSetupEndpoint: '/api/telegram/setup',
     telegramStatusEndpoint: '/api/telegram/status'
   });
@@ -32,7 +47,6 @@ app.use((err, req, res, next) => {
   res.status(500).json({ ok: false, error: 'Internal server error' });
 });
 
-// Vercel can run exported Express apps directly. This listener is only for local/non-Vercel hosting.
 if (!process.env.VERCEL) {
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => {
