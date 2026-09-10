@@ -10,6 +10,9 @@ const {
   clearSession
 } = require('./firebaseService');
 
+const TELEGRAM_TEXT_LIMIT = 3900;
+const DISPLAY_LIMIT = 15;
+
 function getTelegramToken() {
   return process.env.TELEGRAM_TOKEN || process.env.TELEGRAM_BOT_TOKEN || process.env.BOT_TOKEN || '';
 }
@@ -31,8 +34,14 @@ async function telegramRequest(method, payload = {}) {
   return data;
 }
 
+function safeText(text) {
+  const value = String(text || '');
+  if (value.length <= TELEGRAM_TEXT_LIMIT) return value;
+  return `${value.slice(0, TELEGRAM_TEXT_LIMIT - 80)}\n\n…More items are available in the live database.`;
+}
+
 async function sendMessage(chatId, text, extra = {}) {
-  return telegramRequest('sendMessage', { chat_id: chatId, text, ...extra });
+  return telegramRequest('sendMessage', { chat_id: chatId, text: safeText(text), ...extra });
 }
 
 async function answerCallbackQuery(callbackQueryId, text) {
@@ -74,18 +83,47 @@ function money(product) {
   return `${price.toFixed(price % 1 === 0 ? 0 : 2)} ${product.currency || 'USD'}`;
 }
 
-async function inventoryText() {
-  const products = await listProducts({ availableOnly: true });
-  if (!products.length) return '📦 Live Inventory\n\nNo stock is available right now.';
+function looksLikeUnmappedItemCollection(products) {
+  if (!Array.isArray(products) || products.length < 20) return false;
+  const sample = products.slice(0, 20);
+  return sample.every((p) =>
+    Number(p.price || 0) === 0 &&
+    Number(p.stock || 0) === 0 &&
+    String(p.name || '') === String(p.id || '')
+  );
+}
 
-  const lines = products.map((p, i) => `${i + 1}. ${p.name}\n   Stock: ${p.stock}\n   Price: ${money(p)} each`);
-  return `📦 Live Inventory\n\n${lines.join('\n\n')}`;
+async function inventoryText() {
+  const products = await listProducts();
+  if (!products.length) return '📦 Live Inventory\n\nNo inventory records are available right now.';
+
+  if (looksLikeUnmappedItemCollection(products)) {
+    return `📦 Live Inventory\n\nFirebase is connected and ${products.length} inventory records were detected.\n\nThe website stores these records as individual documents, so the bot still needs the website field mapping before it can show the correct product name, available count and price. No private record details are displayed.`;
+  }
+
+  const available = products.filter((p) => p.active && Number(p.stock || 0) > 0);
+  if (!available.length) return '📦 Live Inventory\n\nNo stock is available right now.';
+
+  const visible = available.slice(0, DISPLAY_LIMIT);
+  const lines = visible.map((p, i) => `${i + 1}. ${p.name}\n   Stock: ${p.stock}\n   Price: ${money(p)} each`);
+  const more = available.length > DISPLAY_LIMIT ? `\n\n+ ${available.length - DISPLAY_LIMIT} more product(s) available.` : '';
+  return `📦 Live Inventory\n\n${lines.join('\n\n')}${more}`;
 }
 
 async function pricesText() {
   const products = await listProducts();
   if (!products.length) return '💰 Prices\n\nNo product pricing is available right now.';
-  return `💰 Current Prices\n\n${products.map((p, i) => `${i + 1}. ${p.name} — ${money(p)} each`).join('\n')}`;
+
+  if (looksLikeUnmappedItemCollection(products)) {
+    return '💰 Current Prices\n\nFirebase is connected, but the current inventory documents do not expose a mapped product-price field to the bot yet. Pricing will appear here after the website data fields are mapped.';
+  }
+
+  const priced = products.filter((p) => p.active && Number.isFinite(Number(p.price)));
+  if (!priced.length) return '💰 Prices\n\nNo product pricing is configured right now.';
+  const visible = priced.slice(0, DISPLAY_LIMIT);
+  const lines = visible.map((p, i) => `${i + 1}. ${p.name} — ${money(p)} each`);
+  const more = priced.length > DISPLAY_LIMIT ? `\n\n+ ${priced.length - DISPLAY_LIMIT} more product(s).` : '';
+  return `💰 Current Prices\n\n${lines.join('\n')}${more}`;
 }
 
 async function paymentText() {
@@ -97,7 +135,15 @@ async function paymentText() {
 }
 
 async function buyKeyboard() {
-  const products = await listProducts({ availableOnly: true });
+  const allProducts = await listProducts();
+  if (looksLikeUnmappedItemCollection(allProducts)) {
+    return {
+      text: '🛒 Buy\n\nFirebase inventory is connected, but product/price fields still need to be mapped before Telegram ordering can be enabled safely.',
+      reply_markup: backKeyboard()
+    };
+  }
+
+  const products = allProducts.filter((p) => p.active && Number(p.stock || 0) > 0);
   if (!products.length) return { text: '🛒 Buy\n\nNo stock is available right now.', reply_markup: backKeyboard() };
 
   return {
