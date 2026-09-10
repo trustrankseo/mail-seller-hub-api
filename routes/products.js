@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const { listProducts, upsertProduct } = require('../services/firebaseService');
+const { listProducts, upsertProduct, getDb } = require('../services/firebaseService');
 const { broadcastInventoryUpdate } = require('../services/telegramBot');
+const { inspectProductSource } = require('../services/schemaInspector');
 
 function requireAdminSecret(req, res, next) {
   const expected = process.env.ADMIN_SYNC_SECRET;
@@ -14,6 +15,16 @@ function requireAdminSecret(req, res, next) {
   }
   next();
 }
+
+router.get('/schema', async (req, res) => {
+  try {
+    const schema = await inspectProductSource(getDb);
+    res.json({ ok: true, schema });
+  } catch (error) {
+    console.error('Product schema inspect error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
 
 router.get('/', async (req, res) => {
   try {
