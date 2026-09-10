@@ -5,10 +5,16 @@ const {
   saveSubscriber,
   listSubscribers,
   saveOrder,
+  getOrder,
+  updateOrder,
+  findOrderByTxHash,
+  claimOrderPayment,
+  createPaymentNotification,
   saveSession,
   getSession,
   clearSession
 } = require('./firebaseService');
+const { verifyBscPayment } = require('./bscPaymentVerifier');
 
 const TELEGRAM_TEXT_LIMIT = 3900;
 const DISPLAY_LIMIT = 15;
@@ -42,6 +48,28 @@ function safeText(text) {
 
 async function sendMessage(chatId, text, extra = {}) {
   return telegramRequest('sendMessage', { chat_id: chatId, text: safeText(text), ...extra });
+}
+
+async function screenshotDataUrl(message) {
+  const photos = Array.isArray(message.photo) ? message.photo : [];
+  const photo = photos
+    .filter((item) => !item.file_size || item.file_size <= 500000)
+    .sort((a, b) => Number(b.file_size || 0) - Number(a.file_size || 0))[0];
+  const document = message.document?.mime_type?.startsWith('image/') && Number(message.document.file_size || 0) <= 500000
+    ? message.document
+    : null;
+  const file = photo || document;
+  if (!file?.file_id) return null;
+
+  const info = await telegramRequest('getFile', { file_id: file.file_id });
+  const filePath = info.result?.file_path;
+  if (!filePath) throw new Error('Telegram did not return the screenshot file path');
+  const response = await fetch(`https://api.telegram.org/file/bot${getTelegramToken()}/${filePath}`);
+  if (!response.ok) throw new Error('Could not download the payment screenshot');
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.length > 500000) throw new Error('Screenshot is too large. Please send it as a compressed Telegram photo.');
+  const mime = document?.mime_type || 'image/jpeg';
+  return { dataUrl: `data:${mime};base64,${bytes.toString('base64')}`, fileId: file.file_id };
 }
 
 async function answerCallbackQuery(callbackQueryId, text) {
@@ -224,12 +252,102 @@ async function handleBuyQuantity(message, session) {
 
   let text = `✅ Order Created\n\nOrder ID: ${order.id}\nProduct: ${product.name}\nQuantity: ${quantity}\nUnit Price: ${unitPrice.toFixed(2)} ${product.currency}\nTotal: ${total.toFixed(2)} ${product.currency}`;
   if (payment.address) {
-    text += `\n\n💳 ${payment.label}\nNetwork: ${payment.network}\nAddress:\n${payment.address}\n\nAfter payment, send your transaction ID to support.`;
+    text += `\n\n💳 ${payment.label}\nNetwork: ${payment.network}\nAddress:\n${payment.address}\n\nAfter payment, tap “I Have Paid” below. The bot will verify your TxID and ask for a screenshot.`;
   } else {
     text += '\n\nPayment details are currently unavailable. Please contact support.';
   }
 
-  return sendMessage(chatId, text, { reply_markup: mainKeyboard() });
+  return sendMessage(chatId, text, {
+    reply_markup: payment.address ? {
+      inline_keyboard: [
+        [{ text: '✅ I Have Paid', callback_data: `paid:${order.id}` }],
+        [{ text: '⬅️ Main Menu', callback_data: 'menu' }]
+      ]
+    } : mainKeyboard()
+  });
+}
+
+async function handlePaymentTxId(message, session) {
+  const chatId = message.chat.id;
+  const txHash = String(message.text || '').trim().toLowerCase();
+  if (!/^0x[a-f0-9]{64}$/.test(txHash)) {
+    return sendMessage(chatId, '❌ This TxID is not valid. Send the complete BSC transaction hash: 0x followed by 64 letters/numbers.');
+  }
+
+  const order = await getOrder(session.orderId);
+  if (!order || String(order.telegramChatId) !== String(chatId)) {
+    await clearSession(chatId);
+    return sendMessage(chatId, 'This order could not be found. Please create a new order.', { reply_markup: mainKeyboard() });
+  }
+
+  const usedBy = await findOrderByTxHash(txHash);
+  if (usedBy && usedBy.id !== order.id) {
+    return sendMessage(chatId, '❌ This TxID has already been used for another order. Send the correct TxID.');
+  }
+
+  await sendMessage(chatId, '🔎 Checking this payment on BNB Smart Chain...');
+  const payment = await getPaymentSettings();
+  const verification = await verifyBscPayment({
+    txHash,
+    walletAddress: payment.address,
+    expectedAmount: order.total
+  });
+  if (!verification.verified) {
+    return sendMessage(chatId, `❌ Payment not verified: ${verification.message}`);
+  }
+
+  try {
+    await claimOrderPayment(order.id, txHash, {
+      txVerified: true,
+      paymentStatus: 'blockchain_verified',
+      paidAmount: verification.amount,
+      senderAddress: verification.from,
+      bscScanUrl: verification.explorerUrl,
+      confirmations: verification.confirmations
+    });
+  } catch (error) {
+    if (error.code === 'TX_ALREADY_USED') {
+      return sendMessage(chatId, '❌ This TxID has already been used for another order. Send the correct TxID.');
+    }
+    throw error;
+  }
+  await saveSession(chatId, { action: 'awaiting_payment_screenshot', orderId: order.id, txHash });
+  return sendMessage(chatId, `✅ Payment verified on BSC.\nReceived: ${verification.amount.toFixed(2)} USDT\n\nNow send your payment screenshot here as a Telegram photo.`);
+}
+
+async function handlePaymentScreenshot(message, session) {
+  const chatId = message.chat.id;
+  let screenshot;
+  try {
+    screenshot = await screenshotDataUrl(message);
+  } catch (error) {
+    return sendMessage(chatId, `❌ ${error.message}`);
+  }
+  if (!screenshot) {
+    return sendMessage(chatId, 'Please send the payment screenshot as a compressed Telegram photo (maximum 500 KB).');
+  }
+
+  const order = await updateOrder(session.orderId, {
+    status: 'pending',
+    paymentStatus: 'verified',
+    screenshotUrl: screenshot.dataUrl,
+    screenshotTelegramFileId: screenshot.fileId,
+    paymentSubmittedAt: new Date().toISOString()
+  });
+  const notification = await createPaymentNotification(order);
+
+  const adminText = `🔔 VERIFIED PAYMENT\n\nOrder ID: ${order.id}\nCustomer: @${order.username || 'no_username'}\nProduct: ${order.productName}\nQuantity: ${order.quantity}\nPaid: ${Number(order.paidAmount || order.total).toFixed(2)} USDT\nTxID: ${order.txHash}\n${order.bscScanUrl}\n\nOpen Admin Panel → Orders to approve or reject delivery.`;
+  if (notification.telegramChatId) {
+    await sendMessage(notification.telegramChatId, adminText).catch((error) => console.error('Admin Telegram notification failed:', error));
+    await telegramRequest('sendPhoto', {
+      chat_id: notification.telegramChatId,
+      photo: screenshot.fileId,
+      caption: `Payment screenshot for order ${order.id}`
+    }).catch((error) => console.error('Admin screenshot notification failed:', error));
+  }
+
+  await clearSession(chatId);
+  return sendMessage(chatId, `✅ Payment proof submitted.\n\nOrder ID: ${order.id}\nYour blockchain payment is verified. The admin has been notified and will review delivery.`, { reply_markup: mainKeyboard() });
 }
 
 async function handleMessage(message) {
@@ -240,6 +358,12 @@ async function handleMessage(message) {
 
   try {
     const session = await getSession(chatId).catch(() => null);
+    if (session?.action === 'awaiting_payment_screenshot') {
+      return handlePaymentScreenshot(message, session);
+    }
+    if (session?.action === 'awaiting_payment_txid') {
+      return handlePaymentTxId(message, session);
+    }
     if (session?.action === 'awaiting_quantity' && /^\d+$/.test(text)) {
       return handleBuyQuantity(message, session);
     }
@@ -300,6 +424,18 @@ async function handleCallbackQuery(query) {
       if (!product || product.stock <= 0) return sendMessage(chatId, 'This product is no longer available.', { reply_markup: backKeyboard() });
       await saveSession(chatId, { action: 'awaiting_quantity', productId });
       return sendMessage(chatId, `You selected ${product.name}.\nAvailable: ${product.stock}\n${pricingText(product)}\n\nSend the quantity you want to order.`);
+    }
+    if (data.startsWith('paid:')) {
+      const orderId = data.slice(5);
+      const order = await getOrder(orderId);
+      if (!order || String(order.telegramChatId) !== String(chatId)) {
+        return sendMessage(chatId, 'This order does not belong to this chat or is no longer available.', { reply_markup: mainKeyboard() });
+      }
+      if (order.paymentStatus === 'verified') {
+        return sendMessage(chatId, 'This payment has already been submitted for admin review.', { reply_markup: mainKeyboard() });
+      }
+      await saveSession(chatId, { action: 'awaiting_payment_txid', orderId });
+      return sendMessage(chatId, `💳 Payment Verification\n\nOrder ID: ${order.id}\nRequired: ${Number(order.total).toFixed(2)} USDT\n\nSend your BSC transaction ID (TxID) now. It starts with 0x.`);
     }
     if (data === 'subscribe') {
       await saveSubscriber({

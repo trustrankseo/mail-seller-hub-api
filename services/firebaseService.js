@@ -184,8 +184,8 @@ async function getPaymentSettings() {
   const firestore = getDb();
   const forcedPath = process.env.PAYMENT_DOC_PATH;
   const paths = forcedPath
-    ? [forcedPath]
-    : ['settings/payment', 'payment/settings', 'payments/main'];
+    ? [...new Set(['settings/main', forcedPath])]
+    : ['settings/main', 'settings/payment', 'payment/settings', 'payments/main'];
 
   for (const path of paths) {
     const parts = path.split('/').filter(Boolean);
@@ -197,8 +197,11 @@ async function getPaymentSettings() {
         return {
           label: data.label || data.name || envFallback.label,
           network: data.network || data.chain || envFallback.network,
-          address: data.address || data.wallet || data.walletAddress || envFallback.address,
-          currency: data.currency || data.asset || envFallback.currency
+          address: data.bscWalletAddress || data.address || data.wallet || data.walletAddress || envFallback.address,
+          currency: data.currency || data.asset || envFallback.currency,
+          adminEmail: data.adminEmail || '',
+          telegramChatId: data.telegramChatId || '',
+          autoApprove: Boolean(data.autoApprove)
         };
       }
     } catch (error) {
@@ -207,6 +210,97 @@ async function getPaymentSettings() {
   }
 
   return envFallback;
+}
+
+async function getOrder(orderId) {
+  const firestore = getDb();
+  const collection = process.env.ORDERS_COLLECTION || 'orders';
+  const doc = await firestore.collection(collection).doc(String(orderId)).get();
+  return doc.exists ? { id: doc.id, ...doc.data() } : null;
+}
+
+async function updateOrder(orderId, changes = {}) {
+  const firestore = getDb();
+  const collection = process.env.ORDERS_COLLECTION || 'orders';
+  const ref = firestore.collection(collection).doc(String(orderId));
+  await ref.update({
+    ...changes,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+  });
+  return getOrder(orderId);
+}
+
+async function findOrderByTxHash(txHash) {
+  const firestore = getDb();
+  const collection = process.env.ORDERS_COLLECTION || 'orders';
+  const normalized = String(txHash || '').toLowerCase();
+  if (!normalized) return null;
+  const snap = await firestore.collection(collection).where('txHash', '==', normalized).limit(1).get();
+  return snap.empty ? null : { id: snap.docs[0].id, ...snap.docs[0].data() };
+}
+
+async function claimOrderPayment(orderId, txHash, changes = {}) {
+  const firestore = getDb();
+  const ordersCollection = process.env.ORDERS_COLLECTION || 'orders';
+  const normalizedHash = String(txHash || '').toLowerCase();
+  const orderRef = firestore.collection(ordersCollection).doc(String(orderId));
+  const claimRef = firestore.collection(process.env.PAYMENT_CLAIMS_COLLECTION || 'payment_transactions').doc(normalizedHash);
+
+  await firestore.runTransaction(async (transaction) => {
+    const [orderDoc, claimDoc] = await Promise.all([
+      transaction.get(orderRef),
+      transaction.get(claimRef)
+    ]);
+    if (!orderDoc.exists) throw new Error('Order not found');
+    if (claimDoc.exists && claimDoc.data()?.orderId !== String(orderId)) {
+      const error = new Error('This TxID has already been used for another order.');
+      error.code = 'TX_ALREADY_USED';
+      throw error;
+    }
+
+    transaction.set(claimRef, {
+      txHash: normalizedHash,
+      orderId: String(orderId),
+      claimedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+    transaction.update(orderRef, {
+      ...changes,
+      txHash: normalizedHash,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+  });
+
+  return getOrder(orderId);
+}
+
+async function createPaymentNotification(order) {
+  const firestore = getDb();
+  const settings = await getPaymentSettings();
+  const title = `Payment verified for order ${order.id}`;
+  const body = `${order.productName} | Qty ${order.quantity} | ${Number(order.paidAmount || order.total || 0).toFixed(2)} USDT | TxID ${order.txHash}`;
+
+  await firestore.collection(process.env.NOTIFICATIONS_COLLECTION || 'notifications').add({
+    type: 'payment_verified',
+    title,
+    message: body,
+    orderId: order.id,
+    read: false,
+    createdAt: admin.firestore.FieldValue.serverTimestamp()
+  });
+
+  if (settings.adminEmail) {
+    await firestore.collection(process.env.MAIL_COLLECTION || 'mail').add({
+      to: settings.adminEmail,
+      message: {
+        subject: title,
+        text: `${body}\n\nOpen the admin Orders panel and decide whether to approve and send the emails.`
+      },
+      orderId: order.id,
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+  }
+
+  return { adminEmail: settings.adminEmail, telegramChatId: settings.telegramChatId };
 }
 
 async function saveSubscriber(user = {}, active = true) {
@@ -279,6 +373,11 @@ module.exports = {
   getProduct,
   upsertProduct,
   getPaymentSettings,
+  getOrder,
+  updateOrder,
+  findOrderByTxHash,
+  claimOrderPayment,
+  createPaymentNotification,
   saveSubscriber,
   listSubscribers,
   saveOrder,
