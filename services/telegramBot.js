@@ -391,6 +391,9 @@ async function handleMessage(message) {
   const t = text.toLowerCase();
 
   try {
+    if (t === '/id' || t === '/chatid') {
+      return sendMessage(chatId, `🆔 Your Telegram User ID: ${message.from?.id || 'unknown'}\nChat ID: ${chatId}\n\nFor personal admin alerts, copy “Your Telegram User ID” into Admin Chat ID.`);
+    }
     if (message.chat.type === 'private' && !await requireChannelMembership(chatId, message.from?.id)) return;
     const session = await getSession(chatId).catch(() => null);
     if (session?.action === 'awaiting_payment_screenshot') {
