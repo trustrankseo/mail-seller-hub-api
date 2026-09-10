@@ -29,6 +29,18 @@ function serializeShape(shape) {
   );
 }
 
+async function inspectCollectionShape(collection, limit = 5) {
+  const snap = await collection.limit(limit).get();
+  const shape = {};
+  for (const doc of snap.docs) collectShape(doc.data(), '', shape);
+  return {
+    collection: collection.id,
+    sampleDocumentIds: snap.docs.map((doc) => doc.id),
+    sampleDocuments: snap.size,
+    fields: serializeShape(shape)
+  };
+}
+
 async function inspectProductSource(getDb) {
   const db = getDb();
   const forced = process.env.PRODUCTS_COLLECTION;
@@ -41,15 +53,25 @@ async function inspectProductSource(getDb) {
     const shape = {};
     for (const doc of snap.docs) collectShape(doc.data(), '', shape);
 
+    const rootCollections = await db.listCollections();
+    const related = rootCollections
+      .filter((c) => /(categor|product|package|plan|price|rate)/i.test(c.id) && c.id !== collectionName)
+      .slice(0, 12);
+    const relatedCollections = [];
+    for (const collection of related) {
+      relatedCollections.push(await inspectCollectionShape(collection));
+    }
+
     return {
       found: true,
       collection: collectionName,
       sampleDocuments: snap.size,
-      fields: serializeShape(shape)
+      fields: serializeShape(shape),
+      relatedCollections
     };
   }
 
-  return { found: false, collection: forced || null, sampleDocuments: 0, fields: {} };
+  return { found: false, collection: forced || null, sampleDocuments: 0, fields: {}, relatedCollections: [] };
 }
 
 async function inspectPaymentSource(getDb) {
@@ -78,14 +100,7 @@ async function inspectPaymentSource(getDb) {
   const candidates = [];
 
   for (const collection of likely) {
-    const snap = await collection.limit(5).get();
-    const shape = {};
-    for (const doc of snap.docs) collectShape(doc.data(), '', shape);
-    candidates.push({
-      collection: collection.id,
-      sampleDocumentIds: snap.docs.map((doc) => doc.id),
-      fields: serializeShape(shape)
-    });
+    candidates.push(await inspectCollectionShape(collection));
   }
 
   return {
