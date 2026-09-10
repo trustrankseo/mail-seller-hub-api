@@ -66,15 +66,28 @@ function numberValue(value, fallback = 0) {
 
 function normalizeProduct(id, data = {}) {
   const name = data.name || data.title || data.productName || data.product || data.type || data.category || id;
-  const price = numberValue(data.price ?? data.unitPrice ?? data.salePrice ?? data.rate, 0);
+  // Website categories use `pricePerEmail`. Prefer it over legacy fields so
+  // the Telegram bot always shows the same base price as the website.
+  const price = numberValue(data.pricePerEmail ?? data.price ?? data.unitPrice ?? data.salePrice ?? data.rate, 0);
   const stock = numberValue(data.stockCount ?? data.stock ?? data.quantity ?? data.qty ?? data.available ?? data.count ?? data.inventory, 0);
   const currency = data.currency || data.currencyCode || process.env.DEFAULT_CURRENCY || 'USD';
   const active = data.isActive !== false && data.active !== false && data.enabled !== false && String(data.status || '').toLowerCase() !== 'inactive';
+  const tiers = Array.isArray(data.tiers)
+    ? data.tiers
+      .map((tier) => ({
+        minQty: Math.max(0, numberValue(tier?.minQty, 0)),
+        maxQty: Math.max(0, numberValue(tier?.maxQty, 0)),
+        price: numberValue(tier?.price, 0)
+      }))
+      .filter((tier) => tier.minQty > 0 && tier.price > 0)
+      .sort((a, b) => a.minQty - b.minQty)
+    : [];
 
   return {
     id,
     name: String(name),
     price,
+    tiers,
     stock,
     currency: String(currency),
     active
@@ -132,17 +145,20 @@ async function upsertProduct(product = {}) {
   const ref = firestore.collection(collectionName).doc(id);
   const before = await ref.get();
   const normalizedStock = numberValue(product.stockCount ?? product.stock ?? product.quantity ?? product.qty, 0);
+  const incomingPrice = numberValue(product.pricePerEmail ?? product.price ?? product.unitPrice, 0);
   const payload = {
     name: product.name || product.title || id,
-    price: numberValue(product.price ?? product.unitPrice, 0),
     currency: product.currency || process.env.DEFAULT_CURRENCY || 'USD',
     updatedAt: admin.firestore.FieldValue.serverTimestamp()
   };
 
   if (collectionName === 'categories') {
+    payload.pricePerEmail = incomingPrice;
     payload.stockCount = normalizedStock;
     payload.isActive = product.isActive !== false && product.active !== false;
+    if (Array.isArray(product.tiers)) payload.tiers = product.tiers;
   } else {
+    payload.price = incomingPrice;
     payload.stock = normalizedStock;
     payload.active = product.active !== false;
   }
@@ -256,6 +272,7 @@ async function clearSession(chatId) {
 }
 
 module.exports = {
+  normalizeProduct,
   firebaseConfigStatus,
   getDb,
   listProducts,

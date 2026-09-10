@@ -83,6 +83,31 @@ function money(product) {
   return `${price.toFixed(price % 1 === 0 ? 0 : 2)} ${product.currency || 'USD'}`;
 }
 
+function unitPriceForQuantity(product, quantity) {
+  const qty = Number(quantity);
+  const tiers = Array.isArray(product?.tiers) ? product.tiers : [];
+  const applicableTier = tiers
+    .filter((tier) => {
+      const min = Number(tier.minQty || 0);
+      const max = Number(tier.maxQty || 0);
+      return qty >= min && (max <= 0 || qty <= max) && Number(tier.price) > 0;
+    })
+    .sort((a, b) => Number(b.minQty || 0) - Number(a.minQty || 0))[0];
+
+  return applicableTier ? Number(applicableTier.price) : Number(product?.price || 0);
+}
+
+function pricingText(product) {
+  const lines = [`Base price: ${money(product)} each`];
+  const tiers = Array.isArray(product?.tiers) ? product.tiers : [];
+  for (const tier of tiers) {
+    const max = Number(tier.maxQty || 0);
+    const range = max > 0 ? `${tier.minQty}-${max}` : `${tier.minQty}+`;
+    lines.push(`${range}: ${Number(tier.price).toFixed(2)} ${product.currency || 'USD'} each`);
+  }
+  return lines.join('\n');
+}
+
 function looksLikeUnmappedItemCollection(products) {
   if (!Array.isArray(products) || products.length < 20) return false;
   const sample = products.slice(0, 20);
@@ -121,7 +146,7 @@ async function pricesText() {
   const priced = products.filter((p) => p.active && Number.isFinite(Number(p.price)));
   if (!priced.length) return '💰 Prices\n\nNo product pricing is configured right now.';
   const visible = priced.slice(0, DISPLAY_LIMIT);
-  const lines = visible.map((p, i) => `${i + 1}. ${p.name} — ${money(p)} each`);
+  const lines = visible.map((p, i) => `${i + 1}. ${p.name}\n   ${pricingText(p).replace(/\n/g, '\n   ')}`);
   const more = priced.length > DISPLAY_LIMIT ? `\n\n+ ${priced.length - DISPLAY_LIMIT} more product(s).` : '';
   return `💰 Current Prices\n\n${lines.join('\n')}${more}`;
 }
@@ -180,7 +205,8 @@ async function handleBuyQuantity(message, session) {
     return sendMessage(chatId, `Only ${product.stock} are currently available. Please send a quantity up to ${product.stock}.`);
   }
 
-  const total = Number((product.price * quantity).toFixed(2));
+  const unitPrice = unitPriceForQuantity(product, quantity);
+  const total = Number((unitPrice * quantity).toFixed(2));
   const order = await saveOrder({
     source: 'telegram',
     telegramChatId: String(chatId),
@@ -189,14 +215,14 @@ async function handleBuyQuantity(message, session) {
     productId: product.id,
     productName: product.name,
     quantity,
-    unitPrice: product.price,
+    unitPrice,
     currency: product.currency,
     total
   });
   await clearSession(chatId);
   const payment = await getPaymentSettings();
 
-  let text = `✅ Order Created\n\nOrder ID: ${order.id}\nProduct: ${product.name}\nQuantity: ${quantity}\nUnit Price: ${money(product)}\nTotal: ${total.toFixed(2)} ${product.currency}`;
+  let text = `✅ Order Created\n\nOrder ID: ${order.id}\nProduct: ${product.name}\nQuantity: ${quantity}\nUnit Price: ${unitPrice.toFixed(2)} ${product.currency}\nTotal: ${total.toFixed(2)} ${product.currency}`;
   if (payment.address) {
     text += `\n\n💳 ${payment.label}\nNetwork: ${payment.network}\nAddress:\n${payment.address}\n\nAfter payment, send your transaction ID to support.`;
   } else {
@@ -273,7 +299,7 @@ async function handleCallbackQuery(query) {
       const product = await getProduct(productId);
       if (!product || product.stock <= 0) return sendMessage(chatId, 'This product is no longer available.', { reply_markup: backKeyboard() });
       await saveSession(chatId, { action: 'awaiting_quantity', productId });
-      return sendMessage(chatId, `You selected ${product.name}.\nAvailable: ${product.stock}\nPrice: ${money(product)} each\n\nSend the quantity you want to order.`);
+      return sendMessage(chatId, `You selected ${product.name}.\nAvailable: ${product.stock}\n${pricingText(product)}\n\nSend the quantity you want to order.`);
     }
     if (data === 'subscribe') {
       await saveSubscriber({
@@ -334,6 +360,8 @@ async function getWebhookInfo() {
 
 module.exports = {
   getTelegramToken,
+  unitPriceForQuantity,
+  pricingText,
   sendMessage,
   handleMessage,
   handleCallbackQuery,
